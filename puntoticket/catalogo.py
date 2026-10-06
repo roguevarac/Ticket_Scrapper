@@ -80,11 +80,20 @@ JS_ENLACES = r"""
 }
 """
 
+# Botones de "cargar más" que algunas grillas usan en vez de scroll infinito.
+# Solo elementos que NO navegan: <button> o <a> sin destino real. Un link
+# "Ver más" de un banner lleva a otra página y saca al scraper del catálogo
+# (pasó en el sitio real: el diagnóstico quedó en la página de un evento).
 JS_CLICK_VER_MAS = r"""
 () => {
-    const b = Array.from(document.querySelectorAll('button, a'))
+    const noNavega = el => {
+        if (el.tagName === 'BUTTON') return !el.closest('form[action]') && !el.disabled;
+        const href = (el.getAttribute('href') || '').trim().toLowerCase();
+        return href === '' || href === '#' || href.startsWith('javascript');
+    };
+    const b = Array.from(document.querySelectorAll('button, a, [role="button"]'))
         .find(el => /^\s*(ver|cargar|mostrar)\s+m[aá]s\s*(eventos)?\s*$/i.test(el.innerText || '')
-                    && el.offsetParent !== null);
+                    && el.offsetParent !== null && !el.closest('header, nav, footer') && noNavega(el));
     if (!b) return false;
     b.click();
     return true;
@@ -154,21 +163,50 @@ def _misma_ruta(a, b):
     return ruta(a) == ruta(b)
 
 
-def _scroll_completo(page, max_seg=45):
+def _evaluar(page, js, defecto=None):
+    """evaluate que no explota si la página está navegando."""
+    try:
+        return page.evaluate(js)
+    except Exception:  # noqa: BLE001  (contexto destruido por una navegación)
+        return defecto
+
+
+def _volver_al_catalogo(page, cfg):
+    log(f"   salí del catálogo ({page.url[:90]}); vuelvo a {cfg.catalogo_url}")
+    try:
+        page.goto(cfg.catalogo_url, wait_until="commit", timeout=cfg.timeout_carga_ms)
+        page.wait_for_load_state("domcontentloaded", timeout=cfg.timeout_dom_ms)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        page.wait_for_selector(SELECTOR_CATALOGO, timeout=min(cfg.timeout_elementos_ms, 10000), state="attached")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _scroll_completo(page, cfg, recolectar, max_seg=45):
     """Scroll (y "ver más") hasta que la cantidad de enlaces deje de crecer.
-    Acotado a `max_seg` para que una grilla infinita no lo deje girando."""
-    anterior, quietos = -1, 0
+
+    En cada vuelta junta las tarjetas visibles (sirve también si la grilla
+    elimina las de arriba al bajar). Si algo saca a la página del catálogo,
+    vuelve y deja de hacer click. Acotado a `max_seg`.
+    """
+    anterior, quietos, permitir_click = -1, 0, True
     fin = time.time() + max_seg
     for _ in range(40):
         if time.time() > fin:
             log(f"   scroll cortado a los {max_seg}s")
             break
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        _evaluar(page, "window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(700)
-        clic = page.evaluate(JS_CLICK_VER_MAS)
+        clic = bool(permitir_click and _evaluar(page, JS_CLICK_VER_MAS, False))
         if clic:
             page.wait_for_timeout(1500)
-        actual = page.evaluate("document.querySelectorAll('a[href]').length")
+        if not _misma_ruta(page.url, cfg.catalogo_url):
+            _volver_al_catalogo(page, cfg)
+            permitir_click, clic = False, False
+        recolectar()
+        actual = _evaluar(page, "document.querySelectorAll('a[href]').length", 0)
         quietos = quietos + 1 if actual == anterior and not clic else 0
         if quietos >= 3:
             break
@@ -201,17 +239,31 @@ def leer_catalogo(page, cfg, red=None):
         log(f"   no apareció '{SELECTOR_CATALOGO}' en {espera_ms / 1000:.0f}s; pruebo otras estrategias")
     except Exception as e:  # noqa: BLE001  (navegación en curso, pestaña cerrada)
         log(f"   error esperando las tarjetas ({str(e).splitlines()[0][:100]}); pruebo otras estrategias")
+    acumuladas = {}
+
+    def recolectar():
+        if not _misma_ruta(page.url, cfg.catalogo_url):
+            return
+        for e in _evaluar(page, JS_TARJETAS, []) or []:
+            if e["url"] not in acumuladas or (not acumuladas[e["url"]]["fecha_catalogo"] and e["fecha_catalogo"]):
+                acumuladas[e["url"]] = e
+
+    recolectar()
+    log(f"   {len(acumuladas)} tarjeta(s) leídas antes del scroll")
     paso("scroll del catálogo")
-    _scroll_completo(page)
+    _scroll_completo(page, cfg, recolectar)
+    if not _misma_ruta(page.url, cfg.catalogo_url):
+        _volver_al_catalogo(page, cfg)
     paso("leyendo tarjetas del catálogo")
 
     eventos, estrategia = [], ""
     for intento in range(3):
-        tarjetas = page.evaluate(JS_TARJETAS) or []
+        recolectar()
+        tarjetas = list(acumuladas.values())
         if tarjetas:
             eventos, estrategia = tarjetas, "tarjetas (article.event-item)"
         else:
-            enlaces = page.evaluate(JS_ENLACES) or []
+            enlaces = _evaluar(page, JS_ENLACES, []) or []
             if enlaces:
                 eventos, estrategia = enlaces, "enlaces con fecha (selector genérico)"
             elif red is not None:

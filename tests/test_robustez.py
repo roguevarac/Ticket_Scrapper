@@ -84,3 +84,11 @@ def test_no_espera_el_evento_load(servidor, tmp_path, capsys):
     assert [f["Evento"] for f in _funciones(ruta)] == ["Anuel AA"]
     salida = capsys.readouterr().out
     assert "Cargando catálogo" in salida and "Catálogo abierto en" in salida
+
+
+def test_link_ver_mas_no_saca_del_catalogo(servidor, tmp_path, capsys):
+    # Caso real: un link "Ver más" de un banner llevaba a otra página y el catálogo quedaba vacío.
+    ruta = _correr(servidor, tmp_path, "musica_banner.html", filtro_titulos=["anuel"], leer_asientos=False)
+    assert ruta is not None
+    salida = capsys.readouterr().out
+    assert "Catálogo: 2 eventos detectados" in salida

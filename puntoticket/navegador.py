@@ -239,7 +239,7 @@ def volcar_diagnostico(page, cfg, nombre, red=None, desde=0):
             json.dump(red.desde(desde), f, ensure_ascii=False, indent=1, default=str)
     with open(base.parent / f"{base.name}_info.json", "w", encoding="utf-8") as f:
         json.dump(info, f, ensure_ascii=False, indent=1)
-    log(f"   diagnóstico guardado: {base}.* (selectores: "
+    log(f"   diagnóstico guardado: {base}.* | url: {info['url'][:100]} | selectores: ("
         + ", ".join(f"{k}={v}" for k, v in info["selectores"].items() if v) + ")")
     return info
 
