@@ -51,7 +51,7 @@ def resumir_funcion(funcion, filas_sector, aforos):
     if filas_sector:
         agotada = all(s["agotado"] for s in filas_sector)
         estado = "AGOTADO" if agotada else "DISPONIBLE"
-    elif funcion["agotado_landing"] or funcion["agotado_catalogo"]:
+    elif funcion["agotado_landing"] or funcion["agotado_catalogo"] or funcion.get("sin_entradas_pagina"):
         estado, agotada = "AGOTADO", True
     elif funcion["accesible"]:
         estado, agotada = "SIN SECTORES VISIBLES", False

@@ -40,9 +40,37 @@ Opciones útiles:
 | `--solo aitana --solo "paulo londra"` | Procesar solo esos eventos (prueba rápida). |
 | `--limite 5` | Solo los primeros 5 eventos del catálogo. |
 | `--sin-asientos` | Solo fechas y estados, sin entrar a los sectores (mucho más rápido). |
-| `--debug` | Guarda HTML y captura de cada página de compra en `reportes\debug` para revisar casos raros. |
+| `--diagnostico` | Prueba corta (1 evento, o los de `--solo`) que guarda todo lo que ve el navegador en `reportes\diagnostico`. **Usalo primero si el reporte sale vacío.** |
+| `--debug` | Igual que arriba pero en toda la corrida: HTML, captura, conteo de selectores y JSON de red de cada página. |
+| `--reintentos 3` | Reintentos de carga por página (catálogo, landing, compra). |
+| `--timeout-sectores 15` | Segundos esperando que aparezcan las tarjetas o los sectores del mapa. |
+| `--timeout-asientos 5` / `--reintentos-sector 1` | Espera y reintentos del click en cada sector (si no aparecen asientos se reintenta con un click real del mouse). |
 | `--lanzar` | Abre un Chromium propio en vez de usar el Chrome de `abrir_chrome.bat`. La sesión queda guardada en `perfil_chrome`. |
-| `--espera-cola 180` | Más tiempo en la sala de espera (queue) de eventos con mucha demanda. |
+| `--espera-cola 180` | Más tiempo en la cola virtual o en el desafío de Cloudflare (si Chrome muestra un desafío, resolvelo a mano: el scraper espera). |
+
+## Si el reporte sale vacío o incompleto
+
+El scraper ya no escribe un reporte vacío: si no encuentra eventos lo dice con
+una `*** ADVERTENCIA` en la consola y no toca ningún archivo. Al final siempre
+imprime un resumen (eventos en catálogo, procesados, funciones, sectores,
+asientos leídos y advertencias).
+
+1. Corré `python scraper_puntoticket.py --diagnostico --solo aitana` (o el evento que falle).
+2. Mirá `reportes\diagnostico\`: por cada página queda `.html`, `.png` (captura),
+   `_info.json` (URL final, si detectó cola/Cloudflare, cuántos elementos encontró
+   de cada selector, iframes) y `_red.json` (respuestas JSON internas del sitio).
+3. Mandá esa carpeta comprimida para ajustar los selectores.
+
+Qué hace el scraper para no depender de un solo selector:
+
+- **Catálogo**: prueba `article.event-item`; si no hay, cualquier link con título
+  y fecha; si tampoco, busca eventos en las respuestas JSON (XHR/fetch) del sitio.
+  El log dice qué estrategia funcionó.
+- **Landing**: `.button-block` / `.box-fechas` / `a.boton`; si no hay, links que
+  parecen de compra (`queue`, `compra`, `checkout`, "Comprar entradas"…).
+- **Compra**: espera explícitamente a que la cola virtual o Cloudflare redirijan
+  (no lee nada mientras siga ahí), busca el mapa también dentro de iframes,
+  recarga una vez si no aparece y reintenta el click de cada sector.
 
 ## El Excel
 

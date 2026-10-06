@@ -4,11 +4,7 @@ Correr con:  python -m pytest -q
 Usa el Chromium de Playwright (headless). No necesita internet.
 """
 import csv
-import functools
-import http.server
-import threading
 from datetime import date
-from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
@@ -18,18 +14,6 @@ from puntoticket.capacidades import COLUMNAS_HISTORIAL
 from puntoticket.config import Config
 from puntoticket.fechas import parsear_fecha, parsear_hora
 from puntoticket.scraper import correr
-
-SITIO = Path(__file__).parent / "sitio"
-
-
-@pytest.fixture(scope="module")
-def servidor():
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(SITIO))
-    handler.log_message = lambda *a, **k: None
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.shutdown()
 
 
 @pytest.fixture(scope="module")

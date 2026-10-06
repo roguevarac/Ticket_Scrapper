@@ -14,6 +14,7 @@ Ojo (caso Anuel): que la landing diga AGOTADO no garantiza que la función esté
 agotada. Si el bloque tiene un link de compra distinto de la landing, igual se
 entra a verificar; el estado de la landing queda como dato aparte.
 """
+from .navegador import ir
 from .util import log
 
 JS_FUNCIONES = r"""
@@ -29,6 +30,36 @@ JS_FUNCIONES = r"""
     // Si un bloque contiene a otro (ej. .box-fechas con varios .button-block
     // adentro) se queda el interior; el <h4> del exterior pasa a ser marcador.
     bloques = bloques.filter(b => !bloques.some(o => o !== b && b.contains(o)));
+    let estrategia = 'bloques';
+    if (bloques.length === 0) {
+        // Respaldo si cambiaron las clases: links que parecen de compra
+        // (por URL o por texto), fuera del header/nav/footer.
+        const pareceCompra = a => {
+            const crudo = (a.getAttribute('href') || '').toLowerCase();
+            const txt = (a.innerText || '').trim();
+            if (!crudo || crudo.startsWith('#') || crudo.startsWith('javascript')) return false;
+            // Solo ruta y query: el dominio "puntoticket" no debe contar como "ticket".
+            const href = (a.pathname + a.search).toLowerCase();
+            if (a.href.split('#')[0] === location.href.split('#')[0]) return false;
+            return /queue|enqueue|compra|checkout|ticket|cal=|biz\d/.test(href) ||
+                   /^(comprar|compra tus entradas|comprar entradas|entradas|tickets|buy)/i.test(txt);
+        };
+        Array.from(document.querySelectorAll('a[href]'))
+            .filter(a => !a.closest('header, nav, footer') && pareceCompra(a))
+            .forEach((a, _i, links) => {
+                // Se sube hasta el contenedor más cercano que tenga una fecha,
+                // siempre que no abarque otro link de compra.
+                let w = a.parentElement && a.parentElement !== document.body ? a.parentElement : a;
+                let nodo = w;
+                for (let n = 0; n < 4 && nodo && nodo !== document.body; n++, nodo = nodo.parentElement) {
+                    if (links.some(o => o !== a && nodo.contains(o))) break;
+                    if (patronFecha.test(nodo.innerText || '')) { w = nodo; break; }
+                }
+                if (!bloques.includes(w)) bloques.push(w);
+            });
+        bloques = bloques.filter(b => !bloques.some(o => o !== b && b.contains(o)));
+        estrategia = 'links de compra (respaldo)';
+    }
     if (bloques.length === 0) return null;
 
     const marcadores = Array.from(document.querySelectorAll('h3, h4, h5, img[alt]'))
@@ -82,6 +113,7 @@ JS_FUNCIONES = r"""
                 texto_bloque: texto,
                 etiqueta: (a.innerText || '').replace(/\s+/g, ' ').trim(),
                 agotado_landing: agotado,
+                estrategia,
                 url_compra: href.startsWith('http') ? href : origin + (href.startsWith('/') ? '' : '/') + href,
             });
         });
@@ -119,10 +151,11 @@ def _esperar_bloques(page, intentos=5, espera_ms=1200):
         page.wait_for_timeout(espera_ms)
 
 
-def leer_landing(page, url):
-    """Devuelve (botones, address). `botones` es una lista (posiblemente vacía)."""
-    page.goto(url, timeout=45000, wait_until="domcontentloaded")
-    page.wait_for_timeout(1200)
+def leer_landing(page, url, cfg):
+    """Devuelve (botones, address, motivo_error). `botones` puede ser lista vacía."""
+    ok, motivo = ir(page, url, cfg, nombre="landing")
+    if not ok:
+        return [], None, motivo
     _esperar_bloques(page)
     try:
         botones = page.evaluate(JS_FUNCIONES)
@@ -133,4 +166,4 @@ def leer_landing(page, url):
         address = page.evaluate(JS_ADDRESS)
     except Exception:  # noqa: BLE001
         address = None
-    return botones or [], address
+    return botones or [], address, ""

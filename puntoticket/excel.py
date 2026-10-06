@@ -1,9 +1,13 @@
 """Escritura del reporte en Excel (y CSV de respaldo)."""
 import csv
+import os
+from datetime import datetime
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+
+from .util import aviso
 
 COLUMNAS_FUNCIONES = [
     ("evento", "Evento", 38), ("fecha", "Fecha", 11), ("dia", "Día", 10), ("hora", "Hora", 9),
@@ -90,13 +94,30 @@ def escribir_excel(ruta, funciones, sectores, alertas):
         notas.append([linea])
     notas["A1"].font = Font(bold=True, size=13)
     notas.column_dimensions["A"].width = 120
-    ruta.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(ruta)
+    return _reemplazar(ruta, wb.save)
 
 
 def escribir_csv(ruta, filas, columnas):
+    def escribir(destino):
+        with open(destino, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=[c[0] for c in columnas], extrasaction="ignore")
+            w.writeheader()
+            w.writerows(filas)
+    return _reemplazar(ruta, escribir)
+
+
+def _reemplazar(ruta, escribir):
+    """Escribe en un temporal y recién después reemplaza el archivo final, para
+    no dejar un reporte a medio escribir si algo falla. Si el archivo está
+    abierto (Excel en Windows lo bloquea) guarda con otro nombre y avisa."""
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    with open(ruta, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=[c[0] for c in columnas], extrasaction="ignore")
-        w.writeheader()
-        w.writerows(filas)
+    tmp = ruta.with_name(f"~tmp_{ruta.name}")
+    escribir(tmp)
+    try:
+        os.replace(tmp, ruta)
+        return ruta
+    except PermissionError:
+        alternativa = ruta.with_name(f"{ruta.stem}_{datetime.now():%H%M%S}{ruta.suffix}")
+        os.replace(tmp, alternativa)
+        aviso(f"{ruta.name} está abierto en otro programa; guardé en {alternativa.name}")
+        return alternativa

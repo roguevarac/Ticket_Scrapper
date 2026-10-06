@@ -7,12 +7,9 @@ from .compra import leer_funcion
 from .excel import COLUMNAS_FUNCIONES, COLUMNAS_SECTORES, escribir_csv, escribir_excel
 from .fechas import ahora_txt, anio_en, parsear_fecha, parsear_hora
 from .landing import leer_landing
+from .navegador import RedJSON, volcar_diagnostico
 from .resumen import completar_sectores, resumir_funcion
-from .util import log, normalizar
-
-
-def _slug(texto):
-    return "".join(c if c.isalnum() else "_" for c in normalizar(texto))[:50]
+from .util import AVISOS, aviso, log, normalizar, slug
 
 
 def _nueva_funcion(ev, fecha_texto, hora, url_compra):
@@ -23,7 +20,8 @@ def _nueva_funcion(ev, fecha_texto, hora, url_compra):
         "fecha_texto": fecha_texto or "", "fecha_obj": fecha_obj,
         "fecha": fecha_obj.isoformat() if fecha_obj else (fecha_texto or "FECHA NO DETECTADA"),
         "hora": hora or "", "agotado_landing": False, "agotado_catalogo": bool(ev.get("agotado_catalogo")),
-        "accesible": False, "sectores": [], "alertas": [], "fecha_scraping": ahora_txt(),
+        "accesible": False, "sin_entradas_pagina": False, "sectores": [], "alertas": [],
+        "fecha_scraping": ahora_txt(),
     }
 
 
@@ -36,14 +34,21 @@ def _fusionar(destino, origen):
             por_id[s["sector_id"]] = s
     destino["sectores"] = list(por_id.values())
     destino["agotado_landing"] = destino["agotado_landing"] and origen["agotado_landing"]
+    destino["sin_entradas_pagina"] = destino["sin_entradas_pagina"] and origen["sin_entradas_pagina"]
     destino["accesible"] = destino["accesible"] or origen["accesible"]
     destino["alertas"] += [a for a in origen["alertas"] if a not in destino["alertas"]]
     if origen["url_compra"] and origen["url_compra"] not in destino["url_compra"]:
         destino["url_compra"] = (destino["url_compra"] + " " + origen["url_compra"]).strip()
 
 
-def procesar_evento(page, ev, cfg):
-    botones, address = leer_landing(page, ev["url"])
+def procesar_evento(page, ev, cfg, red=None):
+    inicio_red = len(red) if red is not None else 0
+    botones, address, error = leer_landing(page, ev["url"], cfg)
+    if error:
+        f = _nueva_funcion(ev, ev.get("fecha_catalogo", ""), "", "")
+        f["alertas"].append(f"landing: {error}")
+        volcar_diagnostico(page, cfg, f"landing_{ev['titulo']}", red, inicio_red)
+        return [f]
     if address and address.get("lugar") and not ev.get("lugar"):
         ev["lugar"] = address["lugar"]
 
@@ -57,6 +62,9 @@ def procesar_evento(page, ev, cfg):
             continue
         vistos.add(clave)
         utiles.append(dict(b, url_compra=url))
+    estrategias = {b.get("estrategia", "") for b in utiles} - {""}
+    log(f"   landing: {len(utiles)} botón(es) de compra"
+        + (f" (detectados por {', '.join(sorted(estrategias))})" if estrategias else ""))
 
     if not utiles:
         fecha_texto = ev.get("fecha_catalogo") or (address or {}).get("fecha", "")
@@ -64,6 +72,8 @@ def procesar_evento(page, ev, cfg):
         f["alertas"].append("sin botón de compra en la landing")
         if " - " in (ev.get("fecha_catalogo") or ""):
             f["alertas"].append(f"el catálogo muestra un rango de fechas: {ev['fecha_catalogo']}")
+        if cfg.debug or not ev.get("agotado_catalogo"):
+            volcar_diagnostico(page, cfg, f"landing_{ev['titulo']}", red, inicio_red)
         return [f]
 
     funciones = {}
@@ -74,12 +84,15 @@ def procesar_evento(page, ev, cfg):
         if not b["url_compra"]:
             if not b["agotado_landing"]:
                 f["alertas"].append("botón sin link de compra y sin marca de agotado")
+            log(f"   función {i}/{len(utiles)}: {f['fecha']} sin link de compra"
+                + (" (agotada según la landing)" if b["agotado_landing"] else ""))
         else:
             log(f"   función {i}/{len(utiles)}: {f['fecha']} {f['hora']} -> {b['url_compra'][:90]}")
-            lectura = leer_funcion(page, b["url_compra"], cfg, debug_nombre=f"{_slug(ev['titulo'])}_{i}")
+            lectura = leer_funcion(page, b["url_compra"], cfg, nombre=f"compra_{ev['titulo']}_{i}", red=red)
             f["hora"] = lectura["hora"] or f["hora"]
             f["sectores"] = lectura["sectores"]
             f["accesible"] = lectura["accesible"]
+            f["sin_entradas_pagina"] = lectura["sin_entradas_pagina"]
             f["alertas"] += lectura["alertas"]
             if not b["fecha_texto"] and lectura["fecha_texto_compra"]:
                 otra = parsear_fecha(lectura["fecha_texto_compra"], anio_en(ev.get("fecha_catalogo")))
@@ -114,41 +127,87 @@ def armar_reporte(funciones_crudas, cfg):
 
 
 def guardar(funciones_crudas, cfg, sello, final=False):
+    """Escribe el reporte. Nunca escribe (ni pisa nada) si no hay funciones."""
+    if not funciones_crudas:
+        return None, []
     funciones, sectores, alertas = armar_reporte(funciones_crudas, cfg)
     base = cfg.salida / f"puntoticket_musica_{sello}"
-    escribir_excel(base.with_suffix(".xlsx"), funciones, sectores, alertas)
+    ruta = escribir_excel(base.with_suffix(".xlsx"), funciones, sectores, alertas)
     escribir_csv(base.parent / f"{base.name}_funciones.csv", funciones, COLUMNAS_FUNCIONES)
     escribir_csv(base.parent / f"{base.name}_sectores.csv", sectores, COLUMNAS_SECTORES)
     if final:
         guardar_en_historial(cfg.historial, sectores)
-    return base.with_suffix(".xlsx"), funciones
+    return ruta, funciones
 
 
 def correr(page, cfg):
+    """Corre todo. Devuelve la ruta del Excel, o None si no hubo nada que reportar."""
+    AVISOS.clear()
     sello = datetime.now().strftime("%Y%m%d_%H%M")
-    eventos = leer_catalogo(page, cfg.catalogo_url)
+    red = RedJSON(page)
+    eventos = leer_catalogo(page, cfg, red)
+    total_catalogo = len(eventos)
     if cfg.filtro_titulos:
+        todos = eventos
         filtros = [normalizar(t) for t in cfg.filtro_titulos]
-        eventos = [e for e in eventos if any(t in normalizar(e["titulo"]) for t in filtros)]
+        eventos = [e for e in todos if any(t in normalizar(e["titulo"]) for t in filtros)]
+        log(f"Filtro {cfg.filtro_titulos}: {len(eventos)} de {total_catalogo} eventos")
+        if todos and not eventos:
+            aviso("ningún evento del catálogo coincide con --solo. Algunos títulos: "
+                  + ", ".join(e["titulo"] for e in todos[:15]))
     if cfg.limite:
         eventos = eventos[:cfg.limite]
 
-    funciones = []
+    if not eventos:
+        aviso("no hay eventos para procesar: NO se generó reporte (no se pisó ningún archivo).")
+        _resumen_final(total_catalogo, 0, 0, [], None)
+        return None
+
+    funciones, con_error = [], 0
     for i, ev in enumerate(eventos, start=1):
-        log(f"[{i}/{len(eventos)}] {ev['titulo']} ({ev.get('fecha_catalogo', '')})")
+        log(f"[{i}/{len(eventos)}] {ev['titulo']} | {ev.get('fecha_catalogo', '')} | {ev.get('lugar', '')}")
         try:
-            nuevas = procesar_evento(page, ev, cfg)
+            nuevas = procesar_evento(page, ev, cfg, red)
         except Exception as e:  # noqa: BLE001
+            con_error += 1
             log(f"   error: {e}")
             nuevas = [_nueva_funcion(ev, ev.get("fecha_catalogo", ""), "", "")]
             nuevas[0]["alertas"].append(f"error procesando el evento: {e}")
+            try:
+                volcar_diagnostico(page, cfg, f"error_{slug(ev['titulo'])}", red)
+            except Exception:  # noqa: BLE001
+                pass
         funciones += nuevas
-        log(f"   {len(nuevas)} función(es)")
+        n_sect = sum(len(f["sectores"]) for f in nuevas)
+        n_asientos = sum(s["asientos_totales"] or 0 for f in nuevas for s in f["sectores"])
+        log(f"   => {len(nuevas)} función(es), {n_sect} sectores, {n_asientos} asientos leídos")
         guardar(funciones, cfg, sello)
         page.wait_for_timeout(cfg.pausa_entre_eventos_ms)
 
     ruta, filas = guardar(funciones, cfg, sello, final=True)
-    agotadas = sum(1 for r in filas if r["agotado"] == "SI")
-    log(f"Listo: {len(eventos)} eventos, {len(filas)} funciones ({agotadas} agotadas).")
-    log(f"Reporte: {ruta}")
+    _resumen_final(total_catalogo, len(eventos), con_error, funciones, ruta, cfg)
     return ruta
+
+
+def _resumen_final(total_catalogo, procesados, con_error, funciones, ruta, cfg=None):
+    con_sectores = [f for f in funciones if f["sectores"]]
+    sectores = [s for f in funciones for s in f["sectores"]]
+    leidos = [s for s in sectores if s["asientos_totales"]]
+    log("=" * 64)
+    log(f"Eventos en catálogo:         {total_catalogo}")
+    log(f"Eventos procesados:          {procesados} ({con_error} con error)")
+    log(f"Funciones (fecha/hora):      {len(funciones)} ({len(con_sectores)} con sectores)")
+    log(f"Sectores encontrados:        {len(sectores)} ({len(leidos)} con asientos leídos)")
+    log(f"Asientos leídos:             {sum(s['asientos_totales'] for s in leidos)}")
+    if funciones and not con_sectores and cfg and cfg.leer_asientos:
+        aviso("ninguna función trajo sectores: puede que el mapa haya cambiado o que no estés logueado. "
+              "Revisá reportes/diagnostico/ y la hoja Alertas.")
+    if ruta:
+        log(f"Reporte: {ruta}")
+    else:
+        log("Reporte: NO generado")
+    if AVISOS:
+        log(f"{len(AVISOS)} advertencia(s):")
+        for a in dict.fromkeys(AVISOS):
+            log(f"   - {a}")
+    log("=" * 64)

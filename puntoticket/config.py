@@ -21,9 +21,18 @@ class Config:
     limite: int = 0
     # Si es False no entra a los mapas (solo fechas y estado).
     leer_asientos: bool = True
-    # Segundos máximos esperando que la sala de espera (queue) suelte.
+    # Segundos máximos esperando que la cola virtual o Cloudflare suelten.
     espera_cola_seg: int = 90
     # Pausa entre eventos para no saturar el sitio.
     pausa_entre_eventos_ms: int = 1500
-    # Guarda HTML y capturas de cada página de compra en salida/debug.
+    # Reintentos de carga de cada página (catálogo, landing, compra).
+    reintentos: int = 3
+    # Timeouts (milisegundos).
+    timeout_carga_ms: int = 45000       # navegación (goto)
+    timeout_red_ms: int = 8000          # esperar a que la red quede quieta (best effort)
+    timeout_elementos_ms: int = 15000   # esperar a que aparezcan tarjetas / sectores
+    timeout_asientos_ms: int = 5000     # esperar asientos después de click en un sector
+    # Reintentos de click por sector cuando no aparecen los asientos.
+    reintentos_sector: int = 1
+    # Guarda HTML, captura y JSON de red de cada página de compra en salida/diagnostico.
     debug: bool = False
