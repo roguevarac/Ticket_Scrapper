@@ -28,9 +28,10 @@ class Config:
     # Reintentos de carga de cada página (catálogo, landing, compra).
     reintentos: int = 3
     # Timeouts (milisegundos).
-    timeout_carga_ms: int = 45000       # navegación (goto)
-    timeout_red_ms: int = 8000          # esperar a que la red quede quieta (best effort)
-    timeout_elementos_ms: int = 15000   # esperar a que aparezcan tarjetas / sectores
+    timeout_carga_ms: int = 15000       # navegación (goto con wait_until="commit")
+    timeout_dom_ms: int = 10000         # esperar domcontentloaded después del commit
+    timeout_red_ms: int = 5000          # esperar a que la red quede quieta (best effort)
+    timeout_elementos_ms: int = 10000   # esperar a que aparezcan tarjetas / sectores
     timeout_asientos_ms: int = 5000     # esperar asientos después de click en un sector
     # Reintentos de click por sector cuando no aparecen los asientos.
     reintentos_sector: int = 1

@@ -12,10 +12,13 @@ Se prueban varias estrategias en orden y se usa la primera que devuelve eventos:
                  la página (por si el catálogo pasa a cargarse desde una API).
 """
 import re
-from urllib.parse import urljoin
+import time
+from urllib.parse import urljoin, urlparse
+
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .navegador import ir, volcar_diagnostico
-from .util import aviso, log
+from .util import aviso, log, paso
 
 JS_TARJETAS = r"""
 () => {
@@ -144,10 +147,22 @@ def _deduplicar(eventos, base_url):
     return list(por_url.values())
 
 
-def _scroll_completo(page):
-    """Scroll (y "ver más") hasta que la cantidad de enlaces deje de crecer."""
+def _misma_ruta(a, b):
+    def ruta(u):
+        p = urlparse(u or "")
+        return (p.netloc.lower().removeprefix("www."), p.path.rstrip("/").lower())
+    return ruta(a) == ruta(b)
+
+
+def _scroll_completo(page, max_seg=45):
+    """Scroll (y "ver más") hasta que la cantidad de enlaces deje de crecer.
+    Acotado a `max_seg` para que una grilla infinita no lo deje girando."""
     anterior, quietos = -1, 0
+    fin = time.time() + max_seg
     for _ in range(40):
+        if time.time() > fin:
+            log(f"   scroll cortado a los {max_seg}s")
+            break
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(700)
         clic = page.evaluate(JS_CLICK_VER_MAS)
@@ -162,20 +177,33 @@ def _scroll_completo(page):
 
 def leer_catalogo(page, cfg, red=None):
     """Devuelve la lista de eventos. Lista vacía si no se pudo leer (con diagnóstico)."""
-    log(f"Cargando catálogo {cfg.catalogo_url}")
+    log(f"Cargando catálogo {cfg.catalogo_url} ...")
+    inicio = time.time()
     inicio_red = len(red) if red is not None else 0
     ok, motivo = ir(page, cfg.catalogo_url, cfg, nombre="catalogo")
     if not ok:
         aviso(f"el catálogo no cargó: {motivo}")
         volcar_diagnostico(page, cfg, "catalogo", red, inicio_red)
         return []
-    # Espera no bloqueante: si las tarjetas no aparecen se prueban igual las
-    # otras estrategias (enlaces genéricos, JSON de la red).
+    log(f"Catálogo abierto en {time.time() - inicio:.1f}s: {page.url}")
+    if not _misma_ruta(page.url, cfg.catalogo_url):
+        aviso(f"el catálogo redirigió a {page.url}: puede requerir interacción manual "
+              "(login, captcha, aviso de cookies). Revisá la pestaña del scraper.")
+
+    # Espera acotada y no bloqueante: si las tarjetas no aparecen se prueban
+    # igual las otras estrategias (enlaces genéricos, JSON de la red).
+    espera_ms = min(cfg.timeout_elementos_ms, 10000)
+    paso(f"esperando tarjetas del catálogo ({SELECTOR_CATALOGO})")
     try:
-        page.wait_for_selector(SELECTOR_CATALOGO, timeout=cfg.timeout_elementos_ms, state="attached")
-    except Exception:  # noqa: BLE001
-        log(f"   no apareció '{SELECTOR_CATALOGO}' en {cfg.timeout_elementos_ms / 1000:.0f}s; pruebo otras estrategias")
+        page.wait_for_selector(SELECTOR_CATALOGO, timeout=espera_ms, state="attached")
+        log("   tarjetas visibles, haciendo scroll para cargar todas...")
+    except PlaywrightTimeout:
+        log(f"   no apareció '{SELECTOR_CATALOGO}' en {espera_ms / 1000:.0f}s; pruebo otras estrategias")
+    except Exception as e:  # noqa: BLE001  (navegación en curso, pestaña cerrada)
+        log(f"   error esperando las tarjetas ({str(e).splitlines()[0][:100]}); pruebo otras estrategias")
+    paso("scroll del catálogo")
     _scroll_completo(page)
+    paso("leyendo tarjetas del catálogo")
 
     eventos, estrategia = [], ""
     for intento in range(3):

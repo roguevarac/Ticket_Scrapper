@@ -48,6 +48,19 @@ Opciones útiles:
 | `--lanzar` | Abre un Chromium propio en vez de usar el Chrome de `abrir_chrome.bat`. La sesión queda guardada en `perfil_chrome`. |
 | `--espera-cola 180` | Más tiempo en la cola virtual o en el desafío de Cloudflare (si Chrome muestra un desafío, resolvelo a mano: el scraper espera). |
 
+## Si parece trabado
+
+Ninguna espera es infinita: cada carga usa `wait_until="commit"` con timeout
+(15 s por defecto, `--timeout-carga`), después espera el DOM como máximo 10 s y
+sigue con lo que haya. Si un paso tarda más de 15 s, la consola lo dice
+(`... sigue esperando: <paso>`). Si ves eso:
+
+- Buscá en Chrome la pestaña que abrió el scraper (se pone al frente sola): si
+  hay captcha, Cloudflare o aviso de cookies, resolvelo a mano y sigue solo.
+- Si la consola se queda en `Abriendo una pestaña nueva...` o en `Conectando...`,
+  el problema es la conexión con Chrome: cerrá todos los Chrome y abrilo de nuevo
+  con `abrir_chrome.bat`, o probá con `--lanzar`.
+
 ## Si el reporte sale vacío o incompleto
 
 El scraper ya no escribe un reporte vacío: si no encuentra eventos lo dice con

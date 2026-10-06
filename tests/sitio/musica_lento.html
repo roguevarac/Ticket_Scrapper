@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Música</title></head><body>
+<div id="grilla">
+<article class="event-item"><a href="/aitana.html"><p class="descripcion text-truncate"><strong>Movistar Arena - Santiago Centro</strong> / Pop</p><h3 title="Aitana ">Aitana</h3><p class="fecha">19 de octubre 2026</p></a></article>
+<article class="event-item"><a href="/karolg.html"><p class="descripcion text-truncate"><strong>Estadio Nacional - Ñuñoa</strong> / Urbano</p><h3 title="Karol G">Karol G</h3><p class="fecha">10 de diciembre 2026 - 11 de diciembre 2026</p></a></article>
+<article class="event-item"><a href="/babasonicos.html"><img alt="Agotado" src="data:,"><p class="descripcion text-truncate"><strong>Movistar Arena - Santiago Centro</strong> / Rock</p><h3 title="Babasónicos">Babasónicos</h3><p class="fecha">8 de noviembre 2026</p></a></article>
+</div>
+<button id="mas" style="display:block">Ver más</button>
+<script>
+document.getElementById('mas').addEventListener('click', () => {
+  document.getElementById('grilla').insertAdjacentHTML('beforeend', `
+<article class="event-item"><a href="/jeffmills.html"><p class="descripcion text-truncate">Club Chocolate / Electrónica</p><h3 title="Jeff Mills">Jeff Mills</h3><p class="fecha">5 de diciembre</p></a></article>
+<article class="event-item"><a href="/anuel.html"><p class="descripcion text-truncate"><strong>Movistar Arena - Santiago Centro</strong> / Urbano</p><h3 title="Anuel AA">Anuel AA</h3><p class="fecha">20 de noviembre 2026</p></a></article>`);
+  document.getElementById('mas').style.display = 'none';
+});
+</script><script>fetch("/api/lento").catch(()=>{});</script></body></html>

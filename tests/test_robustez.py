@@ -1,4 +1,6 @@
 """Escenarios de robustez: HTML cambiado, catálogo por API, Cloudflare, catálogo vacío."""
+import time
+
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
 
@@ -63,3 +65,22 @@ def test_cola_que_no_suelta_queda_como_alerta(servidor, tmp_path):
     ws = load_workbook(ruta)["Alertas"]
     detalles = [r[1].value for r in ws.iter_rows(min_row=2)]
     assert any("cola" in (d or "") for d in detalles), detalles
+
+
+def test_no_se_cuelga_con_respuesta_de_red_infinita(servidor, tmp_path):
+    # Una respuesta JSON que nunca termina (analytics / long-polling) no debe trabar el scraper.
+    inicio = time.time()
+    ruta = _correr(servidor, tmp_path, "musica_lento.html", filtro_titulos=["anuel"])
+    assert time.time() - inicio < 90
+    [f] = _funciones(ruta)
+    assert f["Evento"] == "Anuel AA" and f["Asientos numerados"] == 50
+
+
+def test_no_espera_el_evento_load(servidor, tmp_path, capsys):
+    # Una imagen que nunca termina de cargar retiene el evento "load" para siempre.
+    inicio = time.time()
+    ruta = _correr(servidor, tmp_path, "musica_sin_load.html", filtro_titulos=["anuel"])
+    assert time.time() - inicio < 90
+    assert [f["Evento"] for f in _funciones(ruta)] == ["Anuel AA"]
+    salida = capsys.readouterr().out
+    assert "Cargando catálogo" in salida and "Catálogo abierto en" in salida

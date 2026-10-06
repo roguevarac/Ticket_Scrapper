@@ -9,7 +9,8 @@ from .fechas import ahora_txt, anio_en, parsear_fecha, parsear_hora
 from .landing import leer_landing
 from .navegador import RedJSON, volcar_diagnostico
 from .resumen import completar_sectores, resumir_funcion
-from .util import AVISOS, aviso, log, normalizar, slug
+from . import util
+from .util import AVISOS, Vigia, aviso, log, normalizar, slug
 
 
 def _nueva_funcion(ev, fecha_texto, hora, url_compra):
@@ -143,8 +144,30 @@ def guardar(funciones_crudas, cfg, sello, final=False):
 def correr(page, cfg):
     """Corre todo. Devuelve la ruta del Excel, o None si no hubo nada que reportar."""
     AVISOS.clear()
+    util.VIGIA = Vigia()
+    try:
+        return _correr(page, cfg)
+    finally:
+        util.VIGIA.terminar()
+        util.VIGIA = None
+
+
+def _preparar_pestana(page, cfg):
+    """Timeouts por defecto acotados (ninguna espera de Playwright queda sin
+    límite) y la pestaña al frente para que se vea lo que hace el scraper."""
+    page.set_default_navigation_timeout(cfg.timeout_carga_ms)
+    page.set_default_timeout(max(cfg.timeout_elementos_ms, 10000))
+    try:
+        page.bring_to_front()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _correr(page, cfg):
     sello = datetime.now().strftime("%Y%m%d_%H%M")
+    _preparar_pestana(page, cfg)
     red = RedJSON(page)
+    log("Paso 1/3: catálogo")
     eventos = leer_catalogo(page, cfg, red)
     total_catalogo = len(eventos)
     if cfg.filtro_titulos:
@@ -163,6 +186,7 @@ def correr(page, cfg):
         _resumen_final(total_catalogo, 0, 0, [], None)
         return None
 
+    log(f"Paso 2/3: {len(eventos)} evento(s) a procesar")
     funciones, con_error = [], 0
     for i, ev in enumerate(eventos, start=1):
         log(f"[{i}/{len(eventos)}] {ev['titulo']} | {ev.get('fecha_catalogo', '')} | {ev.get('lugar', '')}")
@@ -184,6 +208,7 @@ def correr(page, cfg):
         guardar(funciones, cfg, sello)
         page.wait_for_timeout(cfg.pausa_entre_eventos_ms)
 
+    log("Paso 3/3: armando reporte")
     ruta, filas = guardar(funciones, cfg, sello, final=True)
     _resumen_final(total_catalogo, len(eventos), con_error, funciones, ruta, cfg)
     return ruta

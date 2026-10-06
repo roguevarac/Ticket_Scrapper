@@ -37,6 +37,8 @@ def argumentos(argv=None):
     p.add_argument("--reintentos", type=int, default=d.reintentos, help="reintentos de carga por página")
     p.add_argument("--reintentos-sector", type=int, default=d.reintentos_sector,
                    help="reintentos de click por sector si no aparecen asientos")
+    p.add_argument("--timeout-carga", type=int, default=d.timeout_carga_ms // 1000,
+                   help="segundos máximos de cada navegación (default %(default)s)")
     p.add_argument("--timeout-sectores", type=int, default=d.timeout_elementos_ms // 1000,
                    help="segundos esperando que aparezcan tarjetas/sectores (default %(default)s)")
     p.add_argument("--timeout-asientos", type=int, default=d.timeout_asientos_ms // 1000,
@@ -70,16 +72,16 @@ def main(argv=None):
                  limite=a.limite or (1 if a.diagnostico and not a.solo else 0),
                  leer_asientos=not a.sin_asientos, espera_cola_seg=a.espera_cola,
                  reintentos=max(1, a.reintentos), reintentos_sector=max(0, a.reintentos_sector),
-                 timeout_elementos_ms=a.timeout_sectores * 1000, timeout_asientos_ms=a.timeout_asientos * 1000,
+                 timeout_carga_ms=a.timeout_carga * 1000, timeout_elementos_ms=a.timeout_sectores * 1000, timeout_asientos_ms=a.timeout_asientos * 1000,
                  debug=a.debug or a.diagnostico)
     with sync_playwright() as p:
         if a.lanzar:
             contexto = p.chromium.launch_persistent_context(str(RAIZ / "perfil_chrome"), headless=False,
                                                             viewport={"width": 1400, "height": 900})
         else:
-            log(f"Conectando al Chrome abierto en {a.cdp}")
+            log(f"Conectando al Chrome abierto en {a.cdp} ...")
             try:
-                navegador = p.chromium.connect_over_cdp(a.cdp)
+                navegador = p.chromium.connect_over_cdp(a.cdp, timeout=15000)
             except Exception as e:  # noqa: BLE001
                 log(f"No pude conectarme a {a.cdp}: {str(e).splitlines()[0]}")
                 log("Cerrá Chrome, abrilo con abrir_chrome.bat (o usá --lanzar) y volvé a intentar.")
@@ -89,7 +91,9 @@ def main(argv=None):
             log(f"Contexto con {len(abiertas)} pestaña(s); PuntoTicket abierto: "
                 f"{'sí' if any(es_url_puntoticket(u) for u in abiertas) else 'NO (iniciá sesión en esa ventana)'}")
         # Pestaña propia: no toca las pestañas que ya tenías abiertas.
+        log("Abriendo una pestaña nueva para el scraper...")
         page = contexto.new_page()
+        log("Pestaña abierta (no la cierres mientras corre).")
         try:
             ruta = correr(page, cfg)
         finally:
