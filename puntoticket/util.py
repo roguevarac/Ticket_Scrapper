@@ -5,13 +5,17 @@ AVISOS = []  # advertencias de la corrida, se repiten en el resumen final
 
 
 def log(msg):
-    print(f"[PUNTOTICKET] {msg}", flush=True)
+    linea = f"[PUNTOTICKET] {msg}"
+    print(linea, flush=True)
+    _escribir_log(linea)
 
 
 def aviso(msg):
     """Advertencia visible: se imprime ahora y se repite al final de la corrida."""
     AVISOS.append(msg)
-    print(f"[PUNTOTICKET] *** ADVERTENCIA: {msg}", flush=True)
+    linea = f"[PUNTOTICKET] *** ADVERTENCIA: {msg}"
+    print(linea, flush=True)
+    _escribir_log(linea)
 
 
 def normalizar(texto):
@@ -76,3 +80,24 @@ def paso(texto):
     """Marca el paso actual para el vigía (si está activo)."""
     if VIGIA:
         VIGIA.paso(texto)
+
+
+def a_precio(texto):
+    """'$86.250' -> 86250 (pesos chilenos, el punto es separador de miles)."""
+    m = re.search(r"\$\s*([\d.]+)", texto or "")
+    if not m:
+        return None
+    digitos = m.group(1).replace(".", "")
+    return int(digitos) if digitos.isdigit() else None
+
+
+ARCHIVO_LOG = None  # si se asigna, log() también escribe ahí
+
+
+def _escribir_log(linea):
+    if ARCHIVO_LOG:
+        try:
+            with open(ARCHIVO_LOG, "a", encoding="utf-8") as f:
+                f.write(linea + "\n")
+        except OSError:
+            pass

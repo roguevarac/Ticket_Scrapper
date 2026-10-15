@@ -49,7 +49,7 @@ def reporte(servidor, tmp_path_factory):
         enc = [c.value for c in ws[1]]
         return [dict(zip(enc, [c.value for c in r])) for r in ws.iter_rows(min_row=2)]
 
-    return {"funciones": filas("Funciones"), "sectores": filas("Sectores"), "alertas": filas("Alertas"),
+    return {"funciones": filas("Funciones"), "sectores": filas("Sectores"), "hojas": wb.sheetnames,
             "historial": historial}
 
 
@@ -85,30 +85,50 @@ def test_aitana_ocupacion_y_capacidad_de_agotados(reporte):
     assert (f["Día"], f["Hora"], f["Estado"], f["Agotado"]) == ("lunes", "21:00", "DISPONIBLE", "NO")
     assert f["Lugar"] == "Movistar Arena - Santiago Centro"
     # Medidos: 90/30, 288/288, 100/95. Agotados: TT4S1R97=189 (misma función), TT4S2R92=474 (recinto).
-    assert f["Asientos numerados"] == 90 + 288 + 100 + 189 + 474
-    assert f["Vendidos"] == 30 + 288 + 95 + 189 + 474
+    assert f["Capacidad numerada (entradas)"] == 90 + 288 + 100 + 189 + 474
+    assert f["Vendidas"] == 30 + 288 + 95 + 189 + 474
     assert f["Sectores numerados"] == 5 and f["Sectores agotados"] == 3
     assert f["Sectores sin asiento (cancha/general)"] == "CANCHA GENERAL (DISPONIBLE)"
     assert f["Cancha estimada"] == 15000 - 1141
-    assert f["Confianza"] == "BAJA"  # usó una referencia de otro evento
+    assert f["Calidad del dato"].startswith("Parcial")  # usó una referencia de otro evento
     sec = {s["Sector ID"]: s for s in reporte["sectores"] if s["Evento"] == "Aitana" and s["Fecha"] == "2026-10-19"}
-    assert sec["TT2S1"]["Sector"] == "DIAMANTE" and sec["TT2S1"]["Vendidos (medido)"] == 30
-    assert sec["TT4S1R97"]["Sector"] == "PLATEA BAJA" and sec["TT4S1R97"]["Fuente capacidad"] == "HISTORIAL_FUNCION"
-    assert sec["TT4S2R92"]["Fuente capacidad"] == "REF_RECINTO"
-    assert sec["TT6S1R-40"]["Sector"] == "TRIBUNA" and sec["TT6S1R-40"]["Asientos (medido)"] == 100
+    assert sec["TT2S1"]["Sector"] == "DIAMANTE" and sec["TT2S1"]["Vendidas"] == 30
+    assert sec["TT4S1R97"]["Sector"] == "PLATEA BAJA" and sec["TT4S1R97"]["Origen de la capacidad"] == "Lectura anterior (misma función)"
+    assert sec["TT4S2R92"]["Origen de la capacidad"].startswith("Estimado")
+    assert sec["TT6S1R-40"]["Sector"] == "TRIBUNA" and sec["TT6S1R-40"]["Capacidad (entradas)"] == 100
     assert sec["TT5"]["Tipo"] == "GENERAL"
+    # Recaudación a precio de lista: DIAMANTE $120.000, PLATEA BAJA $86.250, TRIBUNA $11.500.
+    assert sec["TT2S1"]["Precio ($)"] == 120000 and sec["TT2S1"]["No vendidas"] == 60
+    assert f["Recaudación vendida ($, precio lista)"] == (30 + 288) * 120000 + (189 + 474) * 86250 + 95 * 11500
+    assert f["Recaudación no vendida ($, precio lista)"] == 60 * 120000 + 5 * 11500
+    assert f["No vendidas"] == 60 + 5
+
+
+def test_porcentaje_pondera_por_entradas(reporte):
+    # 5 sectores: el % no es "sectores vendidos" sino entradas vendidas / entradas totales.
+    f = _funcion(reporte, "Aitana", "2026-10-19")
+    assert abs(f["% vendido (por entradas)"] - 1076 / 1141) < 1e-9
+
+
+def test_reporte_sin_columnas_ni_hojas_descartadas(reporte):
+    f = reporte["funciones"][0]
+    for col in ("Género", "Fecha (texto sitio)", "Alertas", "Confianza"):
+        assert col not in f
+    s = reporte["sectores"][0]
+    assert "Estado lista precios" not in s and "URL compra" not in s
+    assert reporte["hojas"] == ["Funciones", "Sectores"]
 
 
 def test_funcion_agotada_sin_link(reporte):
     f = _funcion(reporte, "Aitana", "2026-10-20")
-    assert f["Agotado"] == "SI" and f["% ocupación numerada"] == 1.0 and f["Día"] == "martes"
+    assert f["Agotado"] == "SI" and f["% vendido (por entradas)"] == 1.0 and f["Día"] == "martes"
 
 
 def test_karolg_fechas_desde_imagen_y_dos_botones(reporte):
     f = _funcion(reporte, "Karol G", "2026-12-10")
     assert f["Hora"] == "20:30" and f["Agotado"] == "NO"
     # Los dos botones de la misma fecha se juntan en una función: cancha, palco y pacífico.
-    assert f["Sectores numerados"] == 2 and f["Asientos numerados"] == 200
+    assert f["Sectores numerados"] == 2 and f["Capacidad numerada (entradas)"] == 200
     assert "CANCHA (AGOTADO)" in f["Sectores sin asiento (cancha/general)"]
     assert _funcion(reporte, "Karol G", "2026-12-11")["Estado"] == "SIN INFORMACIÓN"
 
@@ -116,8 +136,8 @@ def test_karolg_fechas_desde_imagen_y_dos_botones(reporte):
 def test_landing_agotada_pero_compra_disponible(reporte):
     f = _funcion(reporte, "Anuel AA", "2026-11-20")
     assert f["Estado en landing"] == "AGOTADO"
-    assert f["Agotado"] == "NO" and f["Vendidos"] == 10 and f["Asientos numerados"] == 50
-    assert f["Confianza"] == "ALTA"
+    assert f["Agotado"] == "NO" and f["Vendidas"] == 10 and f["Capacidad numerada (entradas)"] == 50
+    assert f["Calidad del dato"] == "Todo medido hoy"
 
 
 def test_agotado_en_catalogo_y_template_address(reporte):

@@ -35,5 +35,9 @@ class Config:
     timeout_asientos_ms: int = 5000     # esperar asientos después de click en un sector
     # Reintentos de click por sector cuando no aparecen los asientos.
     reintentos_sector: int = 1
+    # Retoma la última corrida sin terminar (reportes/progreso.json).
+    reanudar: bool = False
+    # Abre una pestaña nueva cada N eventos (0 = nunca) para que Chrome no se ponga lento.
+    renovar_pestana_cada: int = 15
     # Guarda HTML, captura y JSON de red de cada página de compra en salida/diagnostico.
     debug: bool = False

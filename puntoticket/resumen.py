@@ -1,52 +1,81 @@
 """Arma las filas finales: una por sector y una por función (fecha + hora).
 
-Ocupación de una función
-  - Sectores numerados medidos: vendidos y totales reales del mapa.
-  - Sectores numerados agotados (no muestran asientos): se cuentan 100%
-    vendidos con la capacidad de referencia (ver capacidades.py).
-  - ocupacion_numerada = vendidos / totales de los sectores con capacidad conocida.
-  - Sectores sin asiento (cancha / general) no tienen conteo en el sitio: se
-    informa su estado (DISPONIBLE / CASI AGOTADO / AGOTADO). Si el recinto tiene
-    aforo cargado en data/aforo_recintos.csv, cancha_estimada = aforo - numerados.
-  - Función agotada completa: ocupación 100%.
+Todo se cuenta en ENTRADAS, no en sectores: un sector de 474 asientos pesa
+474 y uno de 90 pesa 90.
+
+Por sector numerado:
+  - Medido: capacidad, vendidas y no vendidas salen del mapa de asientos.
+  - Agotado (no muestra asientos): vendidas = capacidad de referencia
+    (lectura anterior, ver capacidades.py), no vendidas = 0.
+  - Recaudación vendida = vendidas x precio; no vendida = no vendidas x precio.
+    Es a precio de lista publicado (sin cargo por servicio, sin descuentos,
+    preventas ni cortesías).
+Por función: suma de los sectores numerados con capacidad conocida.
+  % vendido = vendidas / capacidad (ponderado por entradas).
+Sectores sin asiento (cancha / general): PuntoTicket no publica cuántas
+entradas quedan; se informa su estado. Con el aforo del recinto cargado en
+data/aforo_recintos.csv se estima la cancha = aforo - capacidad numerada.
 """
 from .fechas import dia_semana
-from .util import normalizar
+from .util import a_precio, normalizar
 
-ORDEN_CONFIANZA = ["ALTA", "MEDIA", "BAJA"]
+# Origen de la capacidad de cada sector, en palabras.
+ORIGEN = {
+    "MEDIDO": "Medido hoy",
+    "HISTORIAL_FUNCION": "Lectura anterior (misma función)",
+    "HISTORIAL_EVENTO": "Lectura anterior (otra fecha del evento)",
+    "REF_RECINTO": "Estimado (otro evento, mismo recinto)",
+    "SIN_REFERENCIA": "Sin dato",
+    "GENERAL_SIN_CONTEO": "Sin asiento: el sitio no informa cantidad",
+}
 
 
 def completar_sectores(funcion, capacidades):
-    """Agrega capacidad_usada / vendidos_usados / fuente a cada sector."""
+    """Agrega capacidad / vendidas / no vendidas / recaudación a cada sector."""
     filas = []
     for s in funcion["sectores"]:
         f = dict(s)
+        capacidad = vendidas = None
         if s["asientos_totales"]:
-            f.update(capacidad_usada=s["asientos_totales"], vendidos_usados=s["asientos_vendidos"],
-                     fuente_capacidad="MEDIDO")
+            capacidad, vendidas, fuente = s["asientos_totales"], s["asientos_vendidos"], "MEDIDO"
         elif s["tipo"] == "NUMERADO":
-            cap, fuente = capacidades.buscar(funcion["lugar"], funcion["evento"], funcion["fecha"], s["sector_id"])
-            f.update(capacidad_usada=cap, fuente_capacidad=fuente,
-                     vendidos_usados=cap if (cap and s["agotado"]) else None)
-            if not s["agotado"]:
-                f["fuente_capacidad"] = "SIN_LECTURA/" + fuente
+            capacidad, fuente = capacidades.buscar(funcion["lugar"], funcion["evento"], funcion["fecha"],
+                                                   s["sector_id"])
+            if capacidad and s["agotado"]:
+                vendidas = capacidad
+            elif not s["agotado"]:
+                fuente = "SIN_REFERENCIA"  # disponible pero no se pudieron leer los asientos
+                capacidad = None
         else:
-            f.update(capacidad_usada=None, vendidos_usados=None, fuente_capacidad="GENERAL_SIN_CONTEO")
-        f["ocupacion_sector"] = (f["vendidos_usados"] / f["capacidad_usada"]
-                                 if f["capacidad_usada"] and f["vendidos_usados"] is not None else None)
-        f.update(evento=funcion["evento"], fecha=funcion["fecha"], hora=funcion["hora"], lugar=funcion["lugar"],
-                 fecha_scraping=funcion["fecha_scraping"], url_compra=funcion["url_compra"])
+            fuente = "GENERAL_SIN_CONTEO"
+        precio = a_precio(s.get("precio"))
+        no_vendidas = capacidad - vendidas if (capacidad and vendidas is not None) else None
+        f.update(
+            capacidad=capacidad, vendidas=vendidas, no_vendidas=no_vendidas,
+            pct_vendido=vendidas / capacidad if (capacidad and vendidas is not None) else None,
+            precio_num=precio,
+            recaudacion_vendida=vendidas * precio if (precio and vendidas is not None) else None,
+            recaudacion_no_vendida=no_vendidas * precio if (precio and no_vendidas is not None) else None,
+            fuente_capacidad=fuente, origen_capacidad=ORIGEN.get(fuente, fuente),
+            evento=funcion["evento"], fecha=funcion["fecha"], hora=funcion["hora"], lugar=funcion["lugar"],
+            fecha_scraping=funcion["fecha_scraping"],
+        )
         filas.append(f)
     return filas
+
+
+def _suma(filas, clave):
+    valores = [f[clave] for f in filas if f[clave] is not None]
+    return sum(valores) if valores else None
 
 
 def resumir_funcion(funcion, filas_sector, aforos):
     numerados = [s for s in filas_sector if s["tipo"] == "NUMERADO"]
     generales = [s for s in filas_sector if s["tipo"] == "GENERAL"]
-    con_dato = [s for s in numerados if s["capacidad_usada"] and s["vendidos_usados"] is not None]
-    total = sum(s["capacidad_usada"] for s in con_dato)
-    vendidos = sum(s["vendidos_usados"] for s in con_dato)
-    sin_ref = [s for s in numerados if s not in con_dato]
+    con_dato = [s for s in numerados if s["capacidad"] and s["vendidas"] is not None]
+    sin_dato = [s for s in numerados if not (s["capacidad"] and s["vendidas"] is not None)]
+    capacidad = sum(s["capacidad"] for s in con_dato)
+    vendidas = sum(s["vendidas"] for s in con_dato)
 
     if filas_sector:
         agotada = all(s["agotado"] for s in filas_sector)
@@ -58,30 +87,32 @@ def resumir_funcion(funcion, filas_sector, aforos):
     else:
         estado, agotada = "SIN INFORMACIÓN", False
 
-    ocup_num = vendidos / total if total else (1.0 if agotada else None)
+    pct = vendidas / capacidad if capacidad else (1.0 if agotada else None)
 
     aforo = aforos.get(normalizar(funcion["lugar"]))
-    cancha_est = aforo - total if (aforo and generales and total and aforo > total) else None
+    cancha_est = aforo - capacidad if (aforo and generales and capacidad and aforo > capacidad) else None
     if agotada:
         ocup_total = 1.0
     elif aforo and cancha_est and all(g["agotado"] for g in generales):
-        ocup_total = (vendidos + cancha_est) / aforo
-    elif not generales and total:
-        ocup_total = vendidos / total
+        ocup_total = (vendidas + cancha_est) / aforo
+    elif not generales and capacidad:
+        ocup_total = pct
     else:
         ocup_total = None
 
+    rec_vendida = _suma(con_dato, "recaudacion_vendida")
+    rec_no_vendida = _suma(con_dato, "recaudacion_no_vendida")
+    sin_precio = [s for s in con_dato if s["precio_num"] is None]
+
     fuentes = {s["fuente_capacidad"] for s in numerados}
     if not filas_sector:
-        # Agotada según catálogo/landing sin poder ver el mapa: el estado es
-        # confiable salvo casos como Anuel, pero no hay conteo de asientos.
-        confianza = "MEDIA" if agotada else "BAJA"
-    elif sin_ref or any(f.startswith(("REF_RECINTO", "SIN_")) for f in fuentes):
-        confianza = "BAJA"
+        calidad = "Sin mapa (agotada)" if agotada else "Sin mapa"
+    elif sin_dato or "REF_RECINTO" in fuentes:
+        calidad = "Parcial: incluye estimaciones o sectores sin dato"
     elif fuentes - {"MEDIDO"}:
-        confianza = "MEDIA"
+        calidad = "Medido + lecturas anteriores de agotados"
     else:
-        confianza = "ALTA"
+        calidad = "Todo medido hoy"
 
     def lista(sectores):
         return "; ".join(f"{s['sector']} ({'AGOTADO' if s['agotado'] else s['estado_lista'] or 'DISPONIBLE'})"
@@ -93,25 +124,26 @@ def resumir_funcion(funcion, filas_sector, aforos):
         "dia": dia_semana(funcion["fecha_obj"]),
         "hora": funcion["hora"] or "NO DETECTADA",
         "lugar": funcion["lugar"],
-        "genero": funcion["genero"],
         "estado": estado,
         "agotado": "SI" if agotada else "NO",
-        "estado_landing": "AGOTADO" if funcion["agotado_landing"] else "DISPONIBLE",
+        "capacidad": capacidad or None,
+        "vendidas": vendidas if capacidad else None,
+        "no_vendidas": (capacidad - vendidas) if capacidad else None,
+        "pct_vendido": pct,
+        "recaudacion_vendida": rec_vendida,
+        "recaudacion_no_vendida": rec_no_vendida,
+        "recaudacion_potencial": (rec_vendida or 0) + (rec_no_vendida or 0) if rec_vendida is not None else None,
         "sectores_numerados": len(numerados),
         "sectores_numerados_agotados": sum(1 for s in numerados if s["agotado"]),
-        "asientos_numerados_totales": total or None,
-        "asientos_vendidos": vendidos if total else None,
-        "asientos_disponibles": (total - vendidos) if total else None,
-        "ocupacion_numerada": ocup_num,
-        "sectores_sin_capacidad": "; ".join(s["sector_id"] for s in sin_ref),
         "sectores_generales": lista(generales),
         "aforo_recinto": aforo,
         "cancha_estimada": cancha_est,
         "ocupacion_total_estimada": ocup_total,
-        "confianza": confianza,
-        "fecha_texto_original": funcion["fecha_texto"],
+        "calidad": calidad,
+        "sectores_sin_dato": "; ".join(f"{s['sector']} ({s['sector_id']})" for s in sin_dato),
+        "sectores_sin_precio": "; ".join(s["sector"] for s in sin_precio),
+        "estado_landing": "AGOTADO" if funcion["agotado_landing"] else "DISPONIBLE",
         "fecha_scraping": funcion["fecha_scraping"],
         "url_evento": funcion["url_evento"],
         "url_compra": funcion["url_compra"],
-        "alertas": " | ".join(funcion["alertas"]),
     }

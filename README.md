@@ -4,8 +4,9 @@ Lee todos los eventos de https://www.puntoticket.com/musica y arma un Excel con:
 
 - **Una fila por función**: cada fecha (y hora) de un evento es un evento aparte.
   Columnas: evento, fecha, día, hora, lugar, estado, agotado (SI/NO).
-- **Ocupación real**: entra a la página de compra de cada función, recorre los
-  sectores del mapa y cuenta los asientos vendidos y libres.
+- **Entradas vendidas y no vendidas**: entra a la página de compra de cada
+  función, recorre los sectores del mapa y cuenta asiento por asiento.
+- **Recaudación**: vendidas y no vendidas por el precio de lista de cada sector.
 - **Sectores agotados**: no muestran asientos, así que se cuentan 100% vendidos
   con la capacidad que tenían la última vez que se leyeron (historial).
 - **Cancha / general**: PuntoTicket no muestra cuántas entradas quedan, solo si
@@ -45,6 +46,8 @@ Opciones útiles:
 | `--reintentos 3` | Reintentos de carga por página (catálogo, landing, compra). |
 | `--timeout-sectores 15` | Segundos esperando que aparezcan las tarjetas o los sectores del mapa. |
 | `--timeout-asientos 5` / `--reintentos-sector 1` | Espera y reintentos del click en cada sector (si no aparecen asientos se reintenta con un click real del mouse). |
+| `--reanudar` | Si la corrida anterior se cortó (se cerró la consola, se cayó internet), sigue desde donde quedó, sin repetir eventos y en el mismo Excel. |
+| `--renovar-pestana 15` | Abre una pestaña nueva cada 15 eventos para que Chrome no se ponga lento en corridas largas (0 = nunca). |
 | `--lanzar` | Abre un Chromium propio en vez de usar el Chrome de `abrir_chrome.bat`. La sesión queda guardada en `perfil_chrome`. |
 | `--espera-cola 180` | Más tiempo en la cola virtual o en el desafío de Cloudflare (si Chrome muestra un desafío, resolvelo a mano: el scraper espera). |
 
@@ -87,12 +90,42 @@ Qué hace el scraper para no depender de un solo selector:
 
 ## El Excel
 
-| Hoja | Contenido |
+Junto al Excel quedan dos CSV con lo mismo y un `..._log.txt` con todo lo que
+pasó en la corrida (avisos por función incluidos: cola que no soltó, sector
+sin nombre, fecha no interpretada…).
+
+**Hoja Funciones** (una fila por fecha/hora de cada evento):
+
+| Columna | Qué es |
 |---|---|
-| **Funciones** | Una fila por función, con % de ocupación numerada, % total estimado, sectores de cancha y nivel de confianza. |
-| **Sectores** | Detalle por sector: asientos medidos, capacidad usada y de dónde salió. |
-| **Alertas** | Casos para revisar a mano (sala de espera que no soltó, sector sin nombre, fecha no interpretada…). |
-| **Notas** | Cómo se calcula cada columna. |
+| Capacidad numerada (entradas) | Suma de asientos de los sectores numerados con dato. |
+| Vendidas / No vendidas | En entradas. Los sectores agotados cuentan todas sus entradas como vendidas. |
+| % vendido (por entradas) | Vendidas / capacidad. Pondera por tamaño: un sector de 474 asientos pesa 474, uno de 90 pesa 90. **No** es "sectores agotados / sectores". |
+| Recaudación vendida / no vendida / potencial | Entradas × precio de lista del sector, en pesos. Ver advertencias abajo. |
+| Sectores sin asiento | Cancha y generales con su estado (el sitio no informa cantidades). |
+| Aforo recinto / Cancha estimada / % ocupación total | Solo si cargaste el aforo en `data/aforo_recintos.csv`. |
+| Calidad del dato | Qué tan medido está el número (ver abajo). |
+| Sectores numerados sin dato | Sectores que no entraron en la suma: revisar a mano si son grandes. |
+
+**Calidad del dato**:
+
+- *Todo medido hoy*: cada asiento se contó en esta corrida.
+- *Medido + lecturas anteriores de agotados*: los sectores agotados usan la
+  capacidad que tenían en una corrida anterior del mismo evento. Muy confiable.
+- *Parcial: incluye estimaciones o sectores sin dato*: algún sector agotado
+  usa la capacidad de otro evento en el mismo recinto (aproximada), o no hubo
+  forma de saberla. Mirá "Sectores numerados sin dato".
+- *Sin mapa*: no se pudo ver el mapa (función agotada completa o sin link de
+  compra): solo hay estado, no cantidades.
+
+**Hoja Sectores**: precio, capacidad, vendidas, no vendidas, % vendido y
+recaudación por sector, y de dónde salió la capacidad.
+
+**Advertencias para finanzas**: la recaudación es a precio de lista publicado
+en la página de compra. No incluye cargo por servicio, descuentos, preventas
+con otro precio, cortesías ni entradas bloqueadas por la productora (se ven
+como "vendidas" en el mapa). La cancha/general no entra en la recaudación
+porque el sitio no informa cuántas entradas vendió.
 
 ### Cómo se decide la capacidad de un sector agotado
 

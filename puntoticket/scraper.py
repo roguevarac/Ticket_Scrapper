@@ -1,5 +1,8 @@
 """Orquestación: catálogo -> landing de cada evento -> compra de cada función -> reporte."""
-from datetime import datetime
+import json
+import os
+import time
+from datetime import date, datetime
 
 from .capacidades import Capacidades, cargar_aforos, guardar_en_historial
 from .catalogo import leer_catalogo
@@ -116,29 +119,59 @@ def armar_reporte(funciones_crudas, cfg):
             if s["asientos_totales"]:
                 capacidades.agregar(f["lugar"], f["evento"], f["fecha"], s["sector_id"], s["asientos_totales"])
     aforos = cargar_aforos(cfg.aforos)
-    filas_funcion, filas_sector, alertas = [], [], []
+    filas_funcion, filas_sector = [], []
     for f in funciones_crudas:
         sectores = completar_sectores(f, capacidades)
         filas_sector += sectores
         filas_funcion.append(resumir_funcion(f, sectores, aforos))
-        for a in f["alertas"]:
-            alertas.append((f"{f['evento']} {f['fecha']} {f['hora']}", a))
     filas_funcion.sort(key=lambda r: (r["fecha"], r["hora"], r["evento"]))
-    return filas_funcion, filas_sector, alertas
+    return filas_funcion, filas_sector
 
 
 def guardar(funciones_crudas, cfg, sello, final=False):
     """Escribe el reporte. Nunca escribe (ni pisa nada) si no hay funciones."""
     if not funciones_crudas:
         return None, []
-    funciones, sectores, alertas = armar_reporte(funciones_crudas, cfg)
+    funciones, sectores = armar_reporte(funciones_crudas, cfg)
     base = cfg.salida / f"puntoticket_musica_{sello}"
-    ruta = escribir_excel(base.with_suffix(".xlsx"), funciones, sectores, alertas)
+    ruta = escribir_excel(base.with_suffix(".xlsx"), funciones, sectores)
     escribir_csv(base.parent / f"{base.name}_funciones.csv", funciones, COLUMNAS_FUNCIONES)
     escribir_csv(base.parent / f"{base.name}_sectores.csv", sectores, COLUMNAS_SECTORES)
     if final:
         guardar_en_historial(cfg.historial, sectores)
     return ruta, funciones
+
+
+# --- progreso (para --reanudar) ------------------------------------------------
+
+def _ruta_progreso(cfg):
+    return cfg.salida / "progreso.json"
+
+
+def _guardar_progreso(cfg, sello, funciones, urls_hechas):
+    datos = {"sello": sello, "catalogo": cfg.catalogo_url, "urls_hechas": sorted(urls_hechas),
+             "funciones": [dict(f, fecha_obj=None) for f in funciones]}
+    ruta = _ruta_progreso(cfg)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ruta.with_suffix(".tmp")
+    tmp.write_text(json.dumps(datos, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, ruta)
+
+
+def _cargar_progreso(cfg):
+    ruta = _ruta_progreso(cfg)
+    if not ruta.exists():
+        return None
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for f in datos["funciones"]:
+        try:
+            f["fecha_obj"] = date.fromisoformat(f["fecha"])
+        except (TypeError, ValueError):
+            f["fecha_obj"] = None
+    return datos
 
 
 def correr(page, cfg):
@@ -150,6 +183,7 @@ def correr(page, cfg):
     finally:
         util.VIGIA.terminar()
         util.VIGIA = None
+        util.ARCHIVO_LOG = None
 
 
 def _preparar_pestana(page, cfg):
@@ -163,8 +197,32 @@ def _preparar_pestana(page, cfg):
         pass
 
 
+def _renovar_pestana(page, cfg):
+    """Abre una pestaña nueva y cierra la anterior. En corridas largas Chrome
+    acumula memoria en una misma pestaña y se pone lento."""
+    try:
+        nueva = page.context.new_page()
+    except Exception as e:  # noqa: BLE001
+        log(f"   no pude renovar la pestaña ({e}); sigo con la misma")
+        return page, None
+    _preparar_pestana(nueva, cfg)
+    try:
+        page.close()
+    except Exception:  # noqa: BLE001
+        pass
+    log("   pestaña renovada")
+    return nueva, RedJSON(nueva)
+
+
 def _correr(page, cfg):
-    sello = datetime.now().strftime("%Y%m%d_%H%M")
+    previo = _cargar_progreso(cfg) if cfg.reanudar else None
+    if cfg.reanudar and not previo:
+        log("No hay una corrida anterior sin terminar: empiezo de cero.")
+    sello = previo["sello"] if previo else datetime.now().strftime("%Y%m%d_%H%M")
+    cfg.salida.mkdir(parents=True, exist_ok=True)
+    util.ARCHIVO_LOG = cfg.salida / f"puntoticket_musica_{sello}_log.txt"
+    log(f"Log de esta corrida: {util.ARCHIVO_LOG}")
+
     _preparar_pestana(page, cfg)
     red = RedJSON(page)
     log("Paso 1/3: catálogo")
@@ -181,15 +239,30 @@ def _correr(page, cfg):
     if cfg.limite:
         eventos = eventos[:cfg.limite]
 
-    if not eventos:
+    funciones = previo["funciones"] if previo else []
+    hechas = set(previo["urls_hechas"]) if previo else set()
+    if previo:
+        pendientes = [e for e in eventos if e["url"] not in hechas]
+        log(f"Reanudando corrida {sello}: {len(hechas)} evento(s) ya hechos, {len(pendientes)} pendientes")
+        eventos = pendientes
+
+    if not eventos and not funciones:
         aviso("no hay eventos para procesar: NO se generó reporte (no se pisó ningún archivo).")
         _resumen_final(total_catalogo, 0, 0, [], None)
         return None
 
     log(f"Paso 2/3: {len(eventos)} evento(s) a procesar")
-    funciones, con_error = [], 0
+    con_error = 0
+    inicio_eventos = time.time()
     for i, ev in enumerate(eventos, start=1):
-        log(f"[{i}/{len(eventos)}] {ev['titulo']} | {ev.get('fecha_catalogo', '')} | {ev.get('lugar', '')}")
+        if cfg.renovar_pestana_cada and i > 1 and (i - 1) % cfg.renovar_pestana_cada == 0:
+            page, red_nueva = _renovar_pestana(page, cfg)
+            red = red_nueva or red
+        restante = ""
+        if i > 1:
+            seg = (time.time() - inicio_eventos) / (i - 1) * (len(eventos) - i + 1)
+            restante = f" | faltan ~{seg / 60:.0f} min"
+        log(f"[{i}/{len(eventos)}] {ev['titulo']} | {ev.get('fecha_catalogo', '')} | {ev.get('lugar', '')}{restante}")
         try:
             nuevas = procesar_evento(page, ev, cfg, red)
         except Exception as e:  # noqa: BLE001
@@ -202,19 +275,28 @@ def _correr(page, cfg):
             except Exception:  # noqa: BLE001
                 pass
         funciones += nuevas
+        hechas.add(ev["url"])
         n_sect = sum(len(f["sectores"]) for f in nuevas)
         n_asientos = sum(s["asientos_totales"] or 0 for f in nuevas for s in f["sectores"])
         log(f"   => {len(nuevas)} función(es), {n_sect} sectores, {n_asientos} asientos leídos")
+        for f in nuevas:
+            for a in f["alertas"]:
+                log(f"   aviso {f['fecha']} {f['hora']}: {a}")
         guardar(funciones, cfg, sello)
+        _guardar_progreso(cfg, sello, funciones, hechas)
         page.wait_for_timeout(cfg.pausa_entre_eventos_ms)
 
     log("Paso 3/3: armando reporte")
     ruta, filas = guardar(funciones, cfg, sello, final=True)
-    _resumen_final(total_catalogo, len(eventos), con_error, funciones, ruta, cfg)
+    try:
+        _ruta_progreso(cfg).unlink()
+    except OSError:
+        pass
+    _resumen_final(total_catalogo, len(hechas), con_error, funciones, ruta, cfg, filas)
     return ruta
 
 
-def _resumen_final(total_catalogo, procesados, con_error, funciones, ruta, cfg=None):
+def _resumen_final(total_catalogo, procesados, con_error, funciones, ruta, cfg=None, filas=None):
     con_sectores = [f for f in funciones if f["sectores"]]
     sectores = [s for f in funciones for s in f["sectores"]]
     leidos = [s for s in sectores if s["asientos_totales"]]
@@ -223,10 +305,19 @@ def _resumen_final(total_catalogo, procesados, con_error, funciones, ruta, cfg=N
     log(f"Eventos procesados:          {procesados} ({con_error} con error)")
     log(f"Funciones (fecha/hora):      {len(funciones)} ({len(con_sectores)} con sectores)")
     log(f"Sectores encontrados:        {len(sectores)} ({len(leidos)} con asientos leídos)")
-    log(f"Asientos leídos:             {sum(s['asientos_totales'] for s in leidos)}")
+    if filas:
+        cap = sum(r["capacidad"] or 0 for r in filas)
+        ven = sum(r["vendidas"] or 0 for r in filas)
+        rec = sum(r["recaudacion_vendida"] or 0 for r in filas)
+        log(f"Entradas numeradas:          {cap:,} capacidad | {ven:,} vendidas | {cap - ven:,} no vendidas"
+            .replace(",", "."))
+        log(f"Recaudación vendida (lista): ${rec:,}".replace(",", "."))
     if funciones and not con_sectores and cfg and cfg.leer_asientos:
         aviso("ninguna función trajo sectores: puede que el mapa haya cambiado o que no estés logueado. "
-              "Revisá reportes/diagnostico/ y la hoja Alertas.")
+              "Revisá reportes/diagnostico/ y el log de la corrida.")
+    con_avisos = sum(1 for f in funciones if f["alertas"])
+    if con_avisos:
+        log(f"{con_avisos} función(es) con avisos: ver el detalle en el log de la corrida.")
     if ruta:
         log(f"Reporte: {ruta}")
     else:

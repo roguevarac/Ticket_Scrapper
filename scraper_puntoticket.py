@@ -43,6 +43,10 @@ def argumentos(argv=None):
                    help="segundos esperando que aparezcan tarjetas/sectores (default %(default)s)")
     p.add_argument("--timeout-asientos", type=int, default=d.timeout_asientos_ms // 1000,
                    help="segundos esperando asientos después del click (default %(default)s)")
+    p.add_argument("--reanudar", action="store_true",
+                   help="retomar la última corrida que se cortó (salta los eventos ya hechos)")
+    p.add_argument("--renovar-pestana", type=int, default=d.renovar_pestana_cada, metavar="N",
+                   help="abrir una pestaña nueva cada N eventos (0 = nunca, default %(default)s)")
     p.add_argument("--salida", default=str(RAIZ / "reportes"))
     p.add_argument("--debug", action="store_true",
                    help="guardar HTML, captura y JSON de red de cada página en reportes/diagnostico")
@@ -73,7 +77,8 @@ def main(argv=None):
                  leer_asientos=not a.sin_asientos, espera_cola_seg=a.espera_cola,
                  reintentos=max(1, a.reintentos), reintentos_sector=max(0, a.reintentos_sector),
                  timeout_carga_ms=a.timeout_carga * 1000, timeout_elementos_ms=a.timeout_sectores * 1000, timeout_asientos_ms=a.timeout_asientos * 1000,
-                 debug=a.debug or a.diagnostico)
+                 debug=a.debug or a.diagnostico,
+                 reanudar=a.reanudar, renovar_pestana_cada=max(0, a.renovar_pestana))
     with sync_playwright() as p:
         if a.lanzar:
             contexto = p.chromium.launch_persistent_context(str(RAIZ / "perfil_chrome"), headless=False,
@@ -97,7 +102,10 @@ def main(argv=None):
         try:
             ruta = correr(page, cfg)
         finally:
-            page.close()
+            try:
+                page.close()
+            except Exception:  # noqa: BLE001  (ya cerrada al renovar la pestaña)
+                pass
             if a.lanzar:
                 contexto.close()
     return 0 if ruta else 2

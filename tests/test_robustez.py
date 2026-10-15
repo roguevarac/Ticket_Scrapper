@@ -31,13 +31,13 @@ def test_catalogo_con_html_distinto_y_landing_sin_clases(servidor, tmp_path):
     [f] = _funciones(ruta)  # el link del <header> no cuenta como evento
     assert f["Evento"] == "Los Bunkers" and f["Fecha"] == "2026-11-14" and f["Hora"] == "21:00"
     assert f["Lugar"] == "Teatro Caupolicán"
-    assert f["Asientos numerados"] == 50 and f["Vendidos"] == 10
+    assert f["Capacidad numerada (entradas)"] == 50 and f["Vendidas"] == 10
 
 
 def test_catalogo_desde_json_de_la_red(servidor, tmp_path):
     [f] = _funciones(_correr(servidor, tmp_path, "musica_api.html"))
     assert f["Evento"] == "Mon Laferte" and f["Lugar"] == "Movistar Arena - Santiago Centro"
-    assert f["Asientos numerados"] == 50
+    assert f["Capacidad numerada (entradas)"] == 50
 
 
 def test_espera_cloudflare_y_sigue(servidor, tmp_path):
@@ -62,9 +62,8 @@ def test_cola_que_no_suelta_queda_como_alerta(servidor, tmp_path):
     # La landing de Aitana manda a /queue/enqueue.html, que tarda 2,5 s: con 1 s de espera no alcanza.
     ruta = _correr(servidor, tmp_path, "musica.html", espera_cola_seg=1, filtro_titulos=["aitana"],
                    leer_asientos=False)
-    ws = load_workbook(ruta)["Alertas"]
-    detalles = [r[1].value for r in ws.iter_rows(min_row=2)]
-    assert any("cola" in (d or "") for d in detalles), detalles
+    log = ruta.with_name(ruta.stem + "_log.txt").read_text(encoding="utf-8")
+    assert "quedó en cola" in log, log[-2000:]
 
 
 def test_no_se_cuelga_con_respuesta_de_red_infinita(servidor, tmp_path):
@@ -73,7 +72,7 @@ def test_no_se_cuelga_con_respuesta_de_red_infinita(servidor, tmp_path):
     ruta = _correr(servidor, tmp_path, "musica_lento.html", filtro_titulos=["anuel"])
     assert time.time() - inicio < 90
     [f] = _funciones(ruta)
-    assert f["Evento"] == "Anuel AA" and f["Asientos numerados"] == 50
+    assert f["Evento"] == "Anuel AA" and f["Capacidad numerada (entradas)"] == 50
 
 
 def test_no_espera_el_evento_load(servidor, tmp_path, capsys):
@@ -92,3 +91,30 @@ def test_link_ver_mas_no_saca_del_catalogo(servidor, tmp_path, capsys):
     assert ruta is not None
     salida = capsys.readouterr().out
     assert "Catálogo: 2 eventos detectados" in salida
+
+
+def test_reanudar_despues_de_un_corte(servidor, tmp_path, monkeypatch):
+    import pytest
+
+    from puntoticket import scraper
+    original, llamados = scraper.procesar_evento, []
+
+    def cortar_en_el_tercero(page, ev, cfg, red=None):
+        if len(llamados) == 2:
+            raise KeyboardInterrupt  # el usuario cierra la consola / se corta la luz
+        llamados.append(ev["titulo"])
+        return original(page, ev, cfg, red)
+
+    monkeypatch.setattr(scraper, "procesar_evento", cortar_en_el_tercero)
+    with pytest.raises(KeyboardInterrupt):
+        _correr(servidor, tmp_path, "musica.html", leer_asientos=False)
+    assert (tmp_path / "reportes" / "progreso.json").exists()
+
+    monkeypatch.setattr(scraper, "procesar_evento", lambda page, ev, cfg, red=None:
+                        llamados.append(ev["titulo"]) or original(page, ev, cfg, red))
+    ruta = _correr(servidor, tmp_path, "musica.html", leer_asientos=False, reanudar=True,
+                   renovar_pestana_cada=1)
+    assert len(llamados) == 5 and len(set(llamados)) == 5  # ningún evento se procesó dos veces
+    assert {f["Evento"] for f in _funciones(ruta)} == {"Aitana", "Karol G", "Babasónicos", "Jeff Mills", "Anuel AA"}
+    assert not (tmp_path / "reportes" / "progreso.json").exists()
+    assert len(list((tmp_path / "reportes").glob("*.xlsx"))) == 1  # mismo archivo, no uno nuevo
